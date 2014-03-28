@@ -42,6 +42,24 @@ class Redis
       @locking
     end
 
+    def rlock
+      self.class.raise_assertion_error if block_given?
+      @locked = true
+
+      if @block > 0
+        # Blocking mode
+        start_at = Time.now
+        while (Time.now - start_at < @block) && @locked
+          @locked = false and break if try_rlock
+          sleep @sleep
+        end
+      else
+        # Non-blocking mode
+        @locked = !try_rlock
+      end
+      !@locked
+    end
+
     def try_lock
       now = Time.now.to_f
       @expires_at = now + @expire                       # Extend in each blocking loop
@@ -55,6 +73,14 @@ class Redis
       # The lock has expired but wasn't released... BAD!
       return true if getset(@expires_at).to_f <= now    # Success, we acquired the previously expired lock
       return false # Dammit, it seems that someone else was even faster than us to remove the expired lock!
+    end
+
+    def try_rlock
+      !rlocked?
+    end
+
+    def rlocked?
+      get.to_f != 0.0
     end
 
     # Returns true if resource is locked. Note that nil.to_f returns 0.0
@@ -86,8 +112,19 @@ class Redis
       @result
     end
 
+    def with_rlock
+      if rlock!
+        @result = yield
+      end
+      @result
+    end
+
     def lock!
       lock or raise LockError, "failed to acquire lock #{key.inspect}"
+    end
+
+    def rlock!
+      rlock or raise LockError, "could not acquire read only lock #{key.inspect}"
     end
 
     def unlock!(force = false)
@@ -124,6 +161,10 @@ class Redis
 
       def with_lock(object, options = {}, &block)
         new(object, options).with_lock(&block)
+      end
+
+      def with_rlock(object, options = {}, &block)
+        new(object, options).with_rlock(&block)
       end
 
       def raise_assertion_error
